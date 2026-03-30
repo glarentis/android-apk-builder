@@ -16,7 +16,7 @@ jobs:
     steps:
 
     - name: Build Release APK
-      run: gradle clean assembleRelease
+      run: gradle clean
 
     - name: Checkout code
       uses: actions/checkout@v4
