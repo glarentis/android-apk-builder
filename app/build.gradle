@@ -4,11 +4,11 @@ plugins {
 }
 
 android {
-    namespace 'com.example.sampleapp'
+    namespace 'coop.ecoopera.importarubrica'
     compileSdk 34
 
     defaultConfig {
-        applicationId "com.example.sampleapp"
+        applicationId "coop.ecoopera.importarubrica"
         minSdk 21
         targetSdk 34
         versionCode 1
@@ -23,12 +23,12 @@ android {
             proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
         }
     }
-    
+
     compileOptions {
         sourceCompatibility JavaVersion.VERSION_1_8
         targetCompatibility JavaVersion.VERSION_1_8
     }
-    
+
     kotlinOptions {
         jvmTarget = '1.8'
     }
