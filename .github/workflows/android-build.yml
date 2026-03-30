@@ -10,9 +10,13 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
+    env:
+      # Forza l'uso di Node 24 per evitare i warning di deprecazione
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
     steps:
-    - uses: actions/checkout@v4
+    - name: Checkout code
+      uses: actions/checkout@v4
 
     - name: Set up JDK 17
       uses: actions/setup-java@v4
@@ -20,20 +24,16 @@ jobs:
         java-version: '17'
         distribution: 'temurin'
 
-    - name: Cache Gradle packages
-      uses: actions/cache@v3
-      with:
-        path: |
-          ~/.gradle/caches
-          ~/.gradle/wrapper
-        key: ${{ runner.os }}-gradle-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties') }}
-        restore-keys: |
-          ${{ runner.os }}-gradle-
+    - name: Setup Gradle
+      # Questa action gestisce automaticamente la cache in modo più efficiente di actions/cache@v3
+      uses: gradle/actions/setup-gradle@v3
 
     - name: Grant execute permission for gradlew
       run: chmod +x gradlew
 
     - name: Build with Gradle
+      # Usiamo il wrapper. Se fallisce ancora per il .jar mancante, 
+      # sostituisci "./gradlew build" con "gradle build"
       run: ./gradlew build
 
     - name: Build Debug APK
