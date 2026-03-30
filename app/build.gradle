@@ -6,6 +6,7 @@ plugins {
 android {
     namespace 'coop.ecoopera.importarubrica'
     compileSdk 34
+    project.archivesBaseName = "Aggiorna-Contatti"
 
     defaultConfig {
         applicationId "coop.ecoopera.importarubrica"
@@ -15,6 +16,13 @@ android {
         versionName "1.0"
 
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
+    }
+
+
+    applicationVariants.all { variant ->
+        variant.outputs.all {
+            outputFileName = "Aggiorna-Contatti-${defaultConfig.versionName}.apk"
+        }
     }
 
     buildTypes {
