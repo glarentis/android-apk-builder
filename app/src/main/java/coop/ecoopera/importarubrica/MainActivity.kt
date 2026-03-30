@@ -1,4 +1,7 @@
+package coop.ecoopera.importarubrica
+
 import android.app.DownloadManager
+import coop.ecoopera.importarubrica.R
 import android.content.*
 import android.net.Uri
 import android.os.Bundle
