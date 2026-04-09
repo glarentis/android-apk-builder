@@ -1,6 +1,4 @@
 <resources>
     <string name="app_name">Aggiornamento rubrica</string>
-    <string name="welcome_message">Aggiornamento rubrica ecoopera!</string>
-    <string name="click_me">Click Me!</string>
-    <string name="initial_count">Button clicked 0 times</string>
+    <string name="welcome_message">Chiudere al termine dell' operazione!</string>
 </resources>
