@@ -42,15 +42,20 @@ jobs:
         mkdir -p certs
         echo "${{ secrets.KEYSTORE_BASE64 }}" | base64 -d > certs/release.jks
         
-        # 2. Trova il percorso di apksigner (varia in base alla versione dei build-tools)
-        # Usiamo il wildcard per trovare l'ultima versione disponibile
+        # 2. Trova i tool necessari
         APKSIGNER=$(find $ANDROID_SDK_ROOT/build-tools -name apksigner | sort -r | head -n 1)
         ZIPALIGN=$(find $ANDROID_SDK_ROOT/build-tools -name zipalign | sort -r | head -n 1)
         
-        # 3. Allinea l'APK (Zipalign)
-        $ZIPALIGN -v 4 app/build/outputs/apk/release/app-release-unsigned.apk app/build/outputs/apk/release/app-release-aligned.apk
+        # 3. Trova l'APK generato (ignora quelli già allineati o firmati)
+        # Questo comando cerca qualsiasi file .apk nella cartella release
+        RAW_APK=$(find app/build/outputs/apk/release -name "*.apk" ! -name "*-aligned.apk" ! -name "*-final.apk" | head -n 1)
         
-        # 4. Firma l'APK
+        echo "Trovato APK da firmare: $RAW_APK"
+
+        # 4. Allinea l'APK
+        $ZIPALIGN -v 4 "$RAW_APK" app/build/outputs/apk/release/app-release-aligned.apk
+        
+        # 5. Firma l'APK
         $APKSIGNER sign --ks certs/release.jks \
           --ks-key-alias "${{ secrets.ALIAS }}" \
           --ks-pass pass:"${{ secrets.KEY_STORE_PASSWORD }}" \
@@ -62,7 +67,7 @@ jobs:
       uses: actions/upload-artifact@v4
       with:
         name: aggiorna-rubrica-firmato
-        path: ${{ steps.sign_app.outputs.signedReleaseFile }}
+        path: app/build/outputs/apk/release/app-release-final.apk
 
     - name: Upload Build Reports
       uses: actions/upload-artifact@v4
