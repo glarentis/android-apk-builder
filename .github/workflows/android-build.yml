@@ -23,16 +23,20 @@ jobs:
         java-version: '17'
         distribution: 'temurin'
 
+    # Garantisce la presenza di zipalign e build-tools
+    - name: Setup Android SDK
+      uses: android-actions/setup-android@v3
+
     - name: Setup Gradle
       uses: gradle/actions/setup-gradle@v3
       with:
         gradle-version: '8.10.2'
 
-    # Usiamo ./gradlew che è più stabile in ambienti CI
     - name: Build Release APK
-      run: gradle assembleRelease
+      run: |
+        chmod +x gradlew
+        ./gradlew assembleRelease
 
-    # Step fondamentale: Firma l'APK altrimenti non si installa
     - name: Sign APK
       uses: r0adkll/sign-android-release@v1
       id: sign_app
@@ -43,7 +47,6 @@ jobs:
         keyStorePassword: ${{ secrets.KEY_STORE_PASSWORD }}
         keyPassword: ${{ secrets.KEY_PASSWORD }}
 
-    # Carica l'APK firmato 
     - name: Upload Signed APK
       uses: actions/upload-artifact@v4
       with:
