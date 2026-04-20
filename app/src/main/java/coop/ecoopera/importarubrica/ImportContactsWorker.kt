@@ -14,6 +14,7 @@ class ImportContactsWorker(appContext: Context, workerParams: WorkerParameters) 
     CoroutineWorker(appContext, workerParams) {
 
     private val urlString = "https://ticket.ecoopera.coop/contatti"
+    privatete const val SHAREPOINT_ID_MIME_TYPE = "vnd.android.cursor.item/sharepoint_id"
 
     override suspend fun doWork(): Result {
         return try {
@@ -72,6 +73,15 @@ class ImportContactsWorker(appContext: Context, workerParams: WorkerParameters) 
             .withValue(ContactsContract.Data.MIMETYPE, ContactsContract.CommonDataKinds.StructuredName.CONTENT_ITEM_TYPE)
             .withValue(ContactsContract.CommonDataKinds.StructuredName.DISPLAY_NAME, vcard.formattedName.value)
             .build())
+
+        // SharePoint ID (memorizzato come campo personalizzato)
+        vcard.getExtendedProperty("X-SHAREPOINT-ID")?.value?.let { sharepointId ->
+            ops.add(ContentProviderOperation.newInsert(ContactsContract.Data.CONTENT_URI)
+                .withValueBackReference(ContactsContract.Data.RAW_CONTACT_ID, 0)
+                .withValue(ContactsContract.Data.MIMETYPE, sharepointIdMimeType)
+                .withValue(ContactsContract.CommonDataKinds.Data.DATA1, sharepointId)
+                .build())
+        }
 
         // Email
         vcard.emails.firstOrNull()?.let { email ->
