@@ -8,6 +8,9 @@ import androidx.work.CoroutineWorker
 import androidx.work.WorkerParameters
 import ezvcard.Ezvcard
 import ezvcard.VCard
+import ezvcard.parameter.TelephoneType
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import java.net.URL
 
 class ImportContactsWorker(appContext: Context, workerParams: WorkerParameters) :
@@ -15,73 +18,109 @@ class ImportContactsWorker(appContext: Context, workerParams: WorkerParameters) 
 
     private val urlString = "https://ticket.ecoopera.coop/contatti"
     private val SHAREPOINT_ID_MIME_TYPE = "vnd.android.cursor.item/sharepoint_id"
+    private val MIN_CONTACT_THRESHOLD = 5
 
-    override suspend fun doWork(): Result {
-        return try {
-            Log.d("Worker", "Inizio sincronizzazione ogni 3 ore...")
+    override suspend fun doWork(): Result = withContext(Dispatchers.IO) {
+        return@withContext try {
+            Log.d("Worker", "Inizio sincronizzazione completa con telefoni...") ;
 
-            // 1. Download del contenuto VCF come stringa o stream
-            val vcfContent = URL(urlString).readText()
+            val vcfContent = URL(urlString).readText() ;
+            val vcards = Ezvcard.parse(vcfContent).all() ;
 
-            // 2. Parsing con Ezvcard
-            val vcards = Ezvcard.parse(vcfContent).all()
+            if (vcards.size < MIN_CONTACT_THRESHOLD) {
+                Log.e("Worker", "Sincronizzazione annullata: dati insufficienti.") ;
+                return@withContext Result.failure() ;
+            }
 
-            // 3. Elaborazione contatti
+            val remoteIds = vcards.mapNotNull { it.getExtendedProperty("X-SHAREPOINT-ID")?.value }.toSet() ;
+            val localContactsMap = getAllLocalSharepointContacts() ;
+
+            // 1. Pulizia obsoleti
+            val idsToDelete = localContactsMap.keys - remoteIds ;
+            if (idsToDelete.isNotEmpty()) {
+                deleteContacts(idsToDelete.mapNotNull { localContactsMap[it] }) ;
+            }
+
+            // 2. Elaborazione (Create/Update)
             for (vcard in vcards) {
-                val name = vcard.formattedName?.value ?: continue
-                val contactId = findContactIdByFn(name)
+                val sharepointId = vcard.getExtendedProperty("X-SHAREPOINT-ID")?.value ?: continue ;
+                val contactId = localContactsMap[sharepointId] ;
 
                 if (contactId != null) {
-                    updateContact(contactId, vcard)
+                    updateContact(contactId, vcard) ;
                 } else {
-                    createNewContact(vcard)
+                    createNewContact(vcard, sharepointId) ;
                 }
             }
 
-            Log.d("Worker", "Sincronizzazione completata con successo")
-            Result.success()
+            Result.success() ;
         } catch (e: Exception) {
-            Log.e("Worker", "Errore durante il download/importazione: ${e.message}")
-            Result.retry() // Riprova se c'è un errore di rete
+            Log.e("Worker", "Errore: ${e.message}") ;
+            Result.retry() ;
         }
     }
 
-    private fun findContactIdByFn(fn: String): String? {
-        val uri = ContactsContract.Contacts.CONTENT_URI
-        val projection = arrayOf(ContactsContract.Contacts._ID)
-        val selection = "${ContactsContract.Contacts.DISPLAY_NAME} = ?"
-        val selectionArgs = arrayOf(fn)
+    private fun getAllLocalSharepointContacts(): Map<String, String> {
+        val contactsMap = mutableMapOf<String, String>() ;
+        val uri = ContactsContract.Data.CONTENT_URI ;
+        val projection = arrayOf(ContactsContract.Data.CONTACT_ID, ContactsContract.Data.DATA1) ;
+        val selection = "${ContactsContract.Data.MIMETYPE} = ?" ;
+        val selectionArgs = arrayOf(SHAREPOINT_ID_MIME_TYPE) ;
 
         applicationContext.contentResolver.query(uri, projection, selection, selectionArgs, null)?.use { cursor ->
-            if (cursor.moveToFirst()) {
-                return cursor.getString(cursor.getColumnIndexOrThrow(ContactsContract.Contacts._ID))
+            val idCol = cursor.getColumnIndexOrThrow(ContactsContract.Data.CONTACT_ID) ;
+            val spCol = cursor.getColumnIndexOrThrow(ContactsContract.Data.DATA1) ;
+            while (cursor.moveToNext()) {
+                val contactId = cursor.getString(idCol) ;
+                val sharepointId = cursor.getString(spCol) ?: continue ;
+                contactsMap[sharepointId] = contactId ;
             }
         }
-        return null
+        return contactsMap ;
     }
 
-    private fun createNewContact(vcard: VCard) {
-        val ops = ArrayList<ContentProviderOperation>()
+    private fun deleteContacts(contactIds: List<String>) {
+        val ops = ArrayList<ContentProviderOperation>() ;
+        contactIds.distinct().forEach { id ->
+            ops.add(ContentProviderOperation.newDelete(ContactsContract.RawContacts.CONTENT_URI)
+                .withSelection("${ContactsContract.RawContacts.CONTACT_ID} = ?", arrayOf(id))
+                .build()) ;
+        }
+        if (ops.isNotEmpty()) applicationContext.contentResolver.applyBatch(ContactsContract.AUTHORITY, ops) ;
+    }
+
+    private fun createNewContact(vcard: VCard, sharepointId: String) {
+        val ops = ArrayList<ContentProviderOperation>() ;
+
         ops.add(ContentProviderOperation.newInsert(ContactsContract.RawContacts.CONTENT_URI)
             .withValue(ContactsContract.RawContacts.ACCOUNT_TYPE, null)
             .withValue(ContactsContract.RawContacts.ACCOUNT_NAME, null)
-            .build())
+            .build()) ;
 
         // Nome
         ops.add(ContentProviderOperation.newInsert(ContactsContract.Data.CONTENT_URI)
             .withValueBackReference(ContactsContract.Data.RAW_CONTACT_ID, 0)
             .withValue(ContactsContract.Data.MIMETYPE, ContactsContract.CommonDataKinds.StructuredName.CONTENT_ITEM_TYPE)
-            .withValue(ContactsContract.CommonDataKinds.StructuredName.DISPLAY_NAME, vcard.formattedName.value)
-            .build())
+            .withValue(ContactsContract.CommonDataKinds.StructuredName.DISPLAY_NAME, vcard.formattedName?.value ?: "")
+            .build()) ;
 
-        // SharePoint ID (memorizzato come campo personalizzato)
-        vcard.getExtendedProperty("X-SHAREPOINT-ID")?.value?.let { sharepointId ->
-            ops.add(ContentProviderOperation.newInsert(ContactsContract.Data.CONTENT_URI)
-                .withValueBackReference(ContactsContract.Data.RAW_CONTACT_ID, 0)
-                .withValue(ContactsContract.Data.MIMETYPE, sharepointIdMimeType)
-                .withValue(ContactsContract.CommonDataKinds.Data.DATA1, sharepointId)
-                .build())
-        }
+        // SharePoint ID
+        ops.add(ContentProviderOperation.newInsert(ContactsContract.Data.CONTENT_URI)
+            .withValueBackReference(ContactsContract.Data.RAW_CONTACT_ID, 0)
+            .withValue(ContactsContract.Data.MIMETYPE, SHAREPOINT_ID_MIME_TYPE)
+            .withValue(ContactsContract.Data.DATA1, sharepointId)
+            .build()) ;
+
+        // Azienda e Job Title
+        val company = vcard.organization?.values?.joinToString("; ") ?: "" ;
+        val jobTitle = vcard.titles?.firstOrNull()?.value ?: "" ;
+        ops.add(ContentProviderOperation.newInsert(ContactsContract.Data.CONTENT_URI)
+            .withValueBackReference(ContactsContract.Data.RAW_CONTACT_ID, 0)
+            .withValue(ContactsContract.Data.MIMETYPE, ContactsContract.CommonDataKinds.Organization.CONTENT_ITEM_TYPE)
+            .withValue(ContactsContract.CommonDataKinds.Organization.COMPANY, company)
+            .withValue(ContactsContract.CommonDataKinds.Organization.TITLE, jobTitle)
+            .withValue(ContactsContract.CommonDataKinds.Organization.TYPE, ContactsContract.CommonDataKinds.Organization.TYPE_WORK)
+            .build()) ;
 
         // Email
         vcard.emails.firstOrNull()?.let { email ->
@@ -89,23 +128,75 @@ class ImportContactsWorker(appContext: Context, workerParams: WorkerParameters) 
                 .withValueBackReference(ContactsContract.Data.RAW_CONTACT_ID, 0)
                 .withValue(ContactsContract.Data.MIMETYPE, ContactsContract.CommonDataKinds.Email.CONTENT_ITEM_TYPE)
                 .withValue(ContactsContract.CommonDataKinds.Email.ADDRESS, email.value)
-                .build())
+                .withValue(ContactsContract.CommonDataKinds.Email.TYPE, ContactsContract.CommonDataKinds.Email.TYPE_WORK)
+                .build()) ;
         }
 
-        applicationContext.contentResolver.applyBatch(ContactsContract.AUTHORITY, ops)
+        // Telefoni (Filtrando il carattere "-")
+        vcard.telephoneNumbers.forEach { tel ->
+            val number = tel.text ;
+            if (!number.isNullOrBlank() && number != "-") {
+                val type = if (tel.types.contains(TelephoneType.CELL)) {
+                    ContactsContract.CommonDataKinds.Phone.TYPE_MOBILE
+                } else {
+                    ContactsContract.CommonDataKinds.Phone.TYPE_WORK
+                }
+
+                ops.add(ContentProviderOperation.newInsert(ContactsContract.Data.CONTENT_URI)
+                    .withValueBackReference(ContactsContract.Data.RAW_CONTACT_ID, 0)
+                    .withValue(ContactsContract.Data.MIMETYPE, ContactsContract.CommonDataKinds.Phone.CONTENT_ITEM_TYPE)
+                    .withValue(ContactsContract.CommonDataKinds.Phone.NUMBER, number)
+                    .withValue(ContactsContract.CommonDataKinds.Phone.TYPE, type)
+                    .build()) ;
+            }
+        }
+
+        // Località (ADR)
+        vcard.addresses?.firstOrNull()?.streetAddress?.let { loc ->
+            ops.add(ContentProviderOperation.newInsert(ContactsContract.Data.CONTENT_URI)
+                .withValueBackReference(ContactsContract.Data.RAW_CONTACT_ID, 0)
+                .withValue(ContactsContract.Data.MIMETYPE, ContactsContract.CommonDataKinds.StructuredPostal.CONTENT_ITEM_TYPE)
+                .withValue(ContactsContract.CommonDataKinds.StructuredPostal.STREET, loc)
+                .withValue(ContactsContract.CommonDataKinds.StructuredPostal.TYPE, ContactsContract.CommonDataKinds.StructuredPostal.TYPE_WORK)
+                .build()) ;
+        }
+
+        applicationContext.contentResolver.applyBatch(ContactsContract.AUTHORITY, ops) ;
     }
 
     private fun updateContact(contactId: String, vcard: VCard) {
-        val ops = ArrayList<ContentProviderOperation>()
+        val ops = ArrayList<ContentProviderOperation>() ;
+
+        // Aggiorna Nome
+        vcard.formattedName?.value?.let { newName ->
+            ops.add(ContentProviderOperation.newUpdate(ContactsContract.Data.CONTENT_URI)
+                .withSelection("${ContactsContract.Data.CONTACT_ID} = ? AND ${ContactsContract.Data.MIMETYPE} = ?",
+                    arrayOf(contactId, ContactsContract.CommonDataKinds.StructuredName.CONTENT_ITEM_TYPE))
+                .withValue(ContactsContract.CommonDataKinds.StructuredName.DISPLAY_NAME, newName)
+                .build()) ;
+        }
+
+        // Aggiorna Azienda/Titolo
+        val company = vcard.organization?.values?.joinToString("; ") ?: "" ;
+        val jobTitle = vcard.titles?.firstOrNull()?.value ?: "" ;
+        ops.add(ContentProviderOperation.newUpdate(ContactsContract.Data.CONTENT_URI)
+            .withSelection("${ContactsContract.Data.CONTACT_ID} = ? AND ${ContactsContract.Data.MIMETYPE} = ?",
+                arrayOf(contactId, ContactsContract.CommonDataKinds.Organization.CONTENT_ITEM_TYPE))
+            .withValue(ContactsContract.CommonDataKinds.Organization.COMPANY, company)
+            .withValue(ContactsContract.CommonDataKinds.Organization.TITLE, jobTitle)
+            .build()) ;
+
+        // Nota: Aggiornare Email e Telefoni esistenti in un update è complesso perché potrebbero essercene multipli.
+        // In una sincronizzazione "mirror", spesso conviene eliminare i Data vecchi di quel contatto e reinserirli,
+        // ma per semplicità qui aggiorniamo la prima email trovata.
         vcard.emails.firstOrNull()?.let { email ->
             ops.add(ContentProviderOperation.newUpdate(ContactsContract.Data.CONTENT_URI)
-                .withSelection(
-                    "${ContactsContract.Data.CONTACT_ID} = ? AND ${ContactsContract.Data.MIMETYPE} = ?",
-                    arrayOf(contactId, ContactsContract.CommonDataKinds.Email.CONTENT_ITEM_TYPE)
-                )
+                .withSelection("${ContactsContract.Data.CONTACT_ID} = ? AND ${ContactsContract.Data.MIMETYPE} = ?",
+                    arrayOf(contactId, ContactsContract.CommonDataKinds.Email.CONTENT_ITEM_TYPE))
                 .withValue(ContactsContract.CommonDataKinds.Email.ADDRESS, email.value)
-                .build())
+                .build()) ;
         }
-        applicationContext.contentResolver.applyBatch(ContactsContract.AUTHORITY, ops)
+
+        if (ops.isNotEmpty()) applicationContext.contentResolver.applyBatch(ContactsContract.AUTHORITY, ops) ;
     }
 }
