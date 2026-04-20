@@ -14,7 +14,7 @@ class ImportContactsWorker(appContext: Context, workerParams: WorkerParameters) 
     CoroutineWorker(appContext, workerParams) {
 
     private val urlString = "https://ticket.ecoopera.coop/contatti"
-    privatete const val SHAREPOINT_ID_MIME_TYPE = "vnd.android.cursor.item/sharepoint_id"
+    private val SHAREPOINT_ID_MIME_TYPE = "vnd.android.cursor.item/sharepoint_id"
 
     override suspend fun doWork(): Result {
         return try {
