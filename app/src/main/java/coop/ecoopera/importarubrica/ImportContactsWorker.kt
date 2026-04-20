@@ -18,7 +18,7 @@ class ImportContactsWorker(appContext: Context, workerParams: WorkerParameters) 
 
     private val urlString = "https://ticket.ecoopera.coop/contatti"
     private val SHAREPOINT_ID_MIME_TYPE = "vnd.android.cursor.item/sharepoint_id"
-    private val MIN_CONTACT_THRESHOLD = 5
+    private val MIN_CONTACT_THRESHOLD = 1
 
     override suspend fun doWork(): Result = withContext(Dispatchers.IO) {
         return@withContext try {
