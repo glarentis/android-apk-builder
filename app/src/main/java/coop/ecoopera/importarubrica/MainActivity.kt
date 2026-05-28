@@ -69,13 +69,13 @@ class MainActivity : AppCompatActivity() {
             .setRequiredNetworkType(NetworkType.CONNECTED)
             .build()
 
-        val workRequest = PeriodicWorkRequestBuilder<ImportContactsWorker>(3, TimeUnit.HOURS)
+        val workRequest = PeriodicWorkRequestBuilder<ImportContactsWorker>(12, TimeUnit.HOURS)
             .setConstraints(constraints)
             .build()
 
         WorkManager.getInstance(this).enqueueUniquePeriodicWork(
             "ContattiSync",
-            ExistingPeriodicWorkPolicy.KEEP, // Mantiene la pianificazione esistente
+            ExistingPeriodicWorkPolicy.UPDATE,
             workRequest
         )
     }
@@ -91,7 +91,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun showActiveStatus() {
-        statusText.text = "Sincronizzazione automatica attiva (ogni 3 ore).\nPuoi chiudere l'app."
+        statusText.text = "Sincronizzazione automatica attiva (ogni 12 ore).\nPuoi chiudere l'app."
         btnForceSync.visibility = View.VISIBLE
     }
 }

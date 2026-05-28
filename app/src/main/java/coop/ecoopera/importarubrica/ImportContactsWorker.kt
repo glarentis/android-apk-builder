@@ -1,202 +1,216 @@
 package coop.ecoopera.importarubrica
 
-import android.content.ContentProviderOperation
-import android.content.Context
-import android.provider.ContactsContract
-import android.util.Log
-import androidx.work.CoroutineWorker
-import androidx.work.WorkerParameters
-import ezvcard.Ezvcard
-import ezvcard.VCard
-import ezvcard.parameter.TelephoneType
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.withContext
-import java.net.URL
+import android.Manifest
+import android.content.ComponentName
+import android.content.Intent
+import android.content.pm.PackageManager
+import android.net.Uri
+import android.os.*
+import android.provider.Settings
+import android.view.View
+import android.widget.Button
+import android.widget.TextView
+import androidx.appcompat.app.AlertDialog
+import androidx.appcompat.app.AppCompatActivity
+import androidx.core.app.ActivityCompat
+import androidx.core.content.ContextCompat
+import androidx.work.*
+import java.util.concurrent.TimeUnit
 
-class ImportContactsWorker(appContext: Context, workerParams: WorkerParameters) :
-    CoroutineWorker(appContext, workerParams) {
+class MainActivity : AppCompatActivity() {
 
-    private val urlString = "https://ticket.ecoopera.coop/contatti"
-    private val SHAREPOINT_ID_MIME_TYPE = "vnd.android.cursor.item/sharepoint_id"
-    private val MIN_CONTACT_THRESHOLD = 1
+    private lateinit var statusText: TextView
+    private lateinit var btnForceSync: Button
 
-    override suspend fun doWork(): Result = withContext(Dispatchers.IO) {
-        return@withContext try {
-            Log.d("Worker", "Inizio sincronizzazione completa con telefoni...") ;
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        setContentView(R.layout.activity_main)
 
-            val vcfContent = URL(urlString).readText() ;
-            val vcards = Ezvcard.parse(vcfContent).all() ;
+        statusText = findViewById(R.id.statusText)
+        btnForceSync = findViewById(R.id.btnForceSync)
 
-            if (vcards.size < MIN_CONTACT_THRESHOLD) {
-                Log.e("Worker", "Sincronizzazione annullata: dati insufficienti.") ;
-                return@withContext Result.failure() ;
+        btnForceSync.setOnClickListener {
+            forceSyncNow()
+        }
+
+        checkAndSetup()
+    }
+
+    // -----------------------------------
+    // ✅ SETUP INIZIALE
+    // -----------------------------------
+    private fun checkAndSetup() {
+        if (hasPermissions()) {
+            checkBatteryOptimization()
+            setupAutomaticWork()
+            showActiveStatus()
+        } else {
+            requestPermissions()
+        }
+    }
+
+    // -----------------------------------
+    // ✅ PERMESSI
+    // -----------------------------------
+    private fun hasPermissions(): Boolean {
+        return ContextCompat.checkSelfPermission(this, Manifest.permission.WRITE_CONTACTS) == PackageManager.PERMISSION_GRANTED &&
+                ContextCompat.checkSelfPermission(this, Manifest.permission.READ_CONTACTS) == PackageManager.PERMISSION_GRANTED
+    }
+
+    private fun requestPermissions() {
+        ActivityCompat.requestPermissions(
+            this,
+            arrayOf(
+                Manifest.permission.READ_CONTACTS,
+                Manifest.permission.WRITE_CONTACTS
+            ),
+            100
+        )
+    }
+
+    override fun onRequestPermissionsResult(
+        requestCode: Int,
+        permissions: Array<out String>,
+        grantResults: IntArray
+    ) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+
+        if (requestCode == 100 && grantResults.all { it == PackageManager.PERMISSION_GRANTED }) {
+            checkBatteryOptimization()
+            setupAutomaticWork()
+            showActiveStatus()
+        } else {
+            statusText.text = "Permessi necessari per sincronizzare la rubrica."
+        }
+    }
+
+    // -----------------------------------
+    // 🔋 BATTERY SMART (Samsung + fallback)
+    // -----------------------------------
+    private fun checkBatteryOptimization() {
+        val pm = getSystemService(POWER_SERVICE) as PowerManager
+
+        if (!pm.isIgnoringBatteryOptimizations(packageName)) {
+            showBatteryDialog()
+        } else {
+            if (isSamsungDevice()) {
+                showSamsungExtraStep()
             }
+        }
+    }
 
-            val remoteIds = vcards.mapNotNull { it.getExtendedProperty("X-SHAREPOINT-ID")?.value }.toSet() ;
-            val localContactsMap = getAllLocalSharepointContacts() ;
-
-            // 1. Pulizia obsoleti
-            val idsToDelete = localContactsMap.keys - remoteIds ;
-            if (idsToDelete.isNotEmpty()) {
-                deleteContacts(idsToDelete.mapNotNull { localContactsMap[it] }) ;
+    private fun showBatteryDialog() {
+        AlertDialog.Builder(this)
+            .setTitle("Ottimizzazione batteria")
+            .setMessage(
+                "Per mantenere la sincronizzazione automatica attiva, " +
+                "è necessario disattivare le restrizioni della batteria.\n\n" +
+                "Ti guideremo nei passaggi."
+            )
+            .setCancelable(false)
+            .setPositiveButton("Continua") { _, _ ->
+                requestDisableBatteryOptimization()
             }
+            .show()
+    }
 
-            // 2. Elaborazione (Create/Update)
-            for (vcard in vcards) {
-                val sharepointId = vcard.getExtendedProperty("X-SHAREPOINT-ID")?.value ?: continue ;
-                val contactId = localContactsMap[sharepointId] ;
-
-                if (contactId != null) {
-                    updateContact(contactId, vcard) ;
-                } else {
-                    createNewContact(vcard, sharepointId) ;
-                }
-            }
-
-            Result.success() ;
+    private fun requestDisableBatteryOptimization() {
+        try {
+            val intent = Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS)
+            intent.data = Uri.parse("package:$packageName")
+            startActivity(intent)
         } catch (e: Exception) {
-            Log.e("Worker", "Errore: ${e.message}") ;
-            Result.retry() ;
+            openBatteryFallback()
         }
     }
 
-    private fun getAllLocalSharepointContacts(): Map<String, String> {
-        val contactsMap = mutableMapOf<String, String>() ;
-        val uri = ContactsContract.Data.CONTENT_URI ;
-        val projection = arrayOf(ContactsContract.Data.CONTACT_ID, ContactsContract.Data.DATA1) ;
-        val selection = "${ContactsContract.Data.MIMETYPE} = ?" ;
-        val selectionArgs = arrayOf(SHAREPOINT_ID_MIME_TYPE) ;
+    private fun isSamsungDevice(): Boolean {
+        return Build.MANUFACTURER.equals("samsung", ignoreCase = true)
+    }
 
-        applicationContext.contentResolver.query(uri, projection, selection, selectionArgs, null)?.use { cursor ->
-            val idCol = cursor.getColumnIndexOrThrow(ContactsContract.Data.CONTACT_ID) ;
-            val spCol = cursor.getColumnIndexOrThrow(ContactsContract.Data.DATA1) ;
-            while (cursor.moveToNext()) {
-                val contactId = cursor.getString(idCol) ;
-                val sharepointId = cursor.getString(spCol) ?: continue ;
-                contactsMap[sharepointId] = contactId ;
+    private fun showSamsungExtraStep() {
+        AlertDialog.Builder(this)
+            .setTitle("Configurazione Samsung")
+            .setMessage(
+                "Per garantire il funzionamento automatico:\n\n" +
+                "1. Vai in 'Batteria'\n" +
+                "2. Apri 'Limiti utilizzo app'\n" +
+                "3. Inserisci Sincronizzazione rubrica in 'App mai in sospensione'"
+            )
+            .setPositiveButton("Apri impostazioni") { _, _ ->
+                openSamsungBatterySettings()
             }
-        }
-        return contactsMap ;
+            .setNegativeButton("Salta", null)
+            .show()
     }
 
-    private fun deleteContacts(contactIds: List<String>) {
-        val ops = ArrayList<ContentProviderOperation>() ;
-        contactIds.distinct().forEach { id ->
-            ops.add(ContentProviderOperation.newDelete(ContactsContract.RawContacts.CONTENT_URI)
-                .withSelection("${ContactsContract.RawContacts.CONTACT_ID} = ?", arrayOf(id))
-                .build()) ;
+    private fun openSamsungBatterySettings() {
+        try {
+            val intent = Intent()
+            intent.component = ComponentName(
+                "com.samsung.android.lool",
+                "com.samsung.android.sm.ui.battery.BatteryActivity"
+            )
+            startActivity(intent)
+        } catch (e: Exception) {
+            openBatteryFallback()
         }
-        if (ops.isNotEmpty()) applicationContext.contentResolver.applyBatch(ContactsContract.AUTHORITY, ops) ;
     }
 
-    private fun createNewContact(vcard: VCard, sharepointId: String) {
-        val ops = ArrayList<ContentProviderOperation>() ;
-
-        ops.add(ContentProviderOperation.newInsert(ContactsContract.RawContacts.CONTENT_URI)
-            .withValue(ContactsContract.RawContacts.ACCOUNT_TYPE, null)
-            .withValue(ContactsContract.RawContacts.ACCOUNT_NAME, null)
-            .build()) ;
-
-        // Nome
-        ops.add(ContentProviderOperation.newInsert(ContactsContract.Data.CONTENT_URI)
-            .withValueBackReference(ContactsContract.Data.RAW_CONTACT_ID, 0)
-            .withValue(ContactsContract.Data.MIMETYPE, ContactsContract.CommonDataKinds.StructuredName.CONTENT_ITEM_TYPE)
-            .withValue(ContactsContract.CommonDataKinds.StructuredName.DISPLAY_NAME, vcard.formattedName?.value ?: "")
-            .build()) ;
-
-        // SharePoint ID
-        ops.add(ContentProviderOperation.newInsert(ContactsContract.Data.CONTENT_URI)
-            .withValueBackReference(ContactsContract.Data.RAW_CONTACT_ID, 0)
-            .withValue(ContactsContract.Data.MIMETYPE, SHAREPOINT_ID_MIME_TYPE)
-            .withValue(ContactsContract.Data.DATA1, sharepointId)
-            .build()) ;
-
-        // Azienda e Job Title
-        val company = vcard.organization?.values?.joinToString("; ") ?: "" ;
-        val jobTitle = vcard.titles?.firstOrNull()?.value ?: "" ;
-        ops.add(ContentProviderOperation.newInsert(ContactsContract.Data.CONTENT_URI)
-            .withValueBackReference(ContactsContract.Data.RAW_CONTACT_ID, 0)
-            .withValue(ContactsContract.Data.MIMETYPE, ContactsContract.CommonDataKinds.Organization.CONTENT_ITEM_TYPE)
-            .withValue(ContactsContract.CommonDataKinds.Organization.COMPANY, company)
-            .withValue(ContactsContract.CommonDataKinds.Organization.TITLE, jobTitle)
-            .withValue(ContactsContract.CommonDataKinds.Organization.TYPE, ContactsContract.CommonDataKinds.Organization.TYPE_WORK)
-            .build()) ;
-
-        // Email
-        vcard.emails.firstOrNull()?.let { email ->
-            ops.add(ContentProviderOperation.newInsert(ContactsContract.Data.CONTENT_URI)
-                .withValueBackReference(ContactsContract.Data.RAW_CONTACT_ID, 0)
-                .withValue(ContactsContract.Data.MIMETYPE, ContactsContract.CommonDataKinds.Email.CONTENT_ITEM_TYPE)
-                .withValue(ContactsContract.CommonDataKinds.Email.ADDRESS, email.value)
-                .withValue(ContactsContract.CommonDataKinds.Email.TYPE, ContactsContract.CommonDataKinds.Email.TYPE_WORK)
-                .build()) ;
-        }
-
-        // Telefoni (Filtrando il carattere "-")
-        vcard.telephoneNumbers.forEach { tel ->
-            val number = tel.text ;
-            if (!number.isNullOrBlank() && number != "-") {
-                val type = if (tel.types.contains(TelephoneType.CELL)) {
-                    ContactsContract.CommonDataKinds.Phone.TYPE_MOBILE
-                } else {
-                    ContactsContract.CommonDataKinds.Phone.TYPE_WORK
+    // fallback semplice (come richiesto)
+    private fun openBatteryFallback() {
+        AlertDialog.Builder(this)
+            .setTitle("Impostazioni batteria")
+            .setMessage(
+                "Vai nelle impostazioni di sistema e disattiva le restrizioni della batteria per questa app, " +
+                "altrimenti la sincronizzazione potrebbe non funzionare correttamente."
+            )
+            .setPositiveButton("Apri impostazioni") { _, _ ->
+                try {
+                    val intent = Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS)
+                    startActivity(intent)
+                } catch (_: Exception) {
                 }
-
-                ops.add(ContentProviderOperation.newInsert(ContactsContract.Data.CONTENT_URI)
-                    .withValueBackReference(ContactsContract.Data.RAW_CONTACT_ID, 0)
-                    .withValue(ContactsContract.Data.MIMETYPE, ContactsContract.CommonDataKinds.Phone.CONTENT_ITEM_TYPE)
-                    .withValue(ContactsContract.CommonDataKinds.Phone.NUMBER, number)
-                    .withValue(ContactsContract.CommonDataKinds.Phone.TYPE, type)
-                    .build()) ;
             }
-        }
-
-        // Località (ADR)
-        vcard.addresses?.firstOrNull()?.streetAddress?.let { loc ->
-            ops.add(ContentProviderOperation.newInsert(ContactsContract.Data.CONTENT_URI)
-                .withValueBackReference(ContactsContract.Data.RAW_CONTACT_ID, 0)
-                .withValue(ContactsContract.Data.MIMETYPE, ContactsContract.CommonDataKinds.StructuredPostal.CONTENT_ITEM_TYPE)
-                .withValue(ContactsContract.CommonDataKinds.StructuredPostal.STREET, loc)
-                .withValue(ContactsContract.CommonDataKinds.StructuredPostal.TYPE, ContactsContract.CommonDataKinds.StructuredPostal.TYPE_WORK)
-                .build()) ;
-        }
-
-        applicationContext.contentResolver.applyBatch(ContactsContract.AUTHORITY, ops) ;
+            .show()
     }
 
-    private fun updateContact(contactId: String, vcard: VCard) {
-        val ops = ArrayList<ContentProviderOperation>() ;
+    // -----------------------------------
+    // ⏱ WORKMANAGER
+    // -----------------------------------
+    private fun setupAutomaticWork() {
 
-        // Aggiorna Nome
-        vcard.formattedName?.value?.let { newName ->
-            ops.add(ContentProviderOperation.newUpdate(ContactsContract.Data.CONTENT_URI)
-                .withSelection("${ContactsContract.Data.CONTACT_ID} = ? AND ${ContactsContract.Data.MIMETYPE} = ?",
-                    arrayOf(contactId, ContactsContract.CommonDataKinds.StructuredName.CONTENT_ITEM_TYPE))
-                .withValue(ContactsContract.CommonDataKinds.StructuredName.DISPLAY_NAME, newName)
-                .build()) ;
-        }
+        val constraints = Constraints.Builder()
+            .setRequiredNetworkType(NetworkType.CONNECTED)
+            .build()
 
-        // Aggiorna Azienda/Titolo
-        val company = vcard.organization?.values?.joinToString("; ") ?: "" ;
-        val jobTitle = vcard.titles?.firstOrNull()?.value ?: "" ;
-        ops.add(ContentProviderOperation.newUpdate(ContactsContract.Data.CONTENT_URI)
-            .withSelection("${ContactsContract.Data.CONTACT_ID} = ? AND ${ContactsContract.Data.MIMETYPE} = ?",
-                arrayOf(contactId, ContactsContract.CommonDataKinds.Organization.CONTENT_ITEM_TYPE))
-            .withValue(ContactsContract.CommonDataKinds.Organization.COMPANY, company)
-            .withValue(ContactsContract.CommonDataKinds.Organization.TITLE, jobTitle)
-            .build()) ;
+        val workRequest =
+            PeriodicWorkRequestBuilder<ImportContactsWorker>(12, TimeUnit.HOURS)
+                .setConstraints(constraints)
+                .build()
 
-        // Nota: Aggiornare Email e Telefoni esistenti in un update è complesso perché potrebbero essercene multipli.
-        // In una sincronizzazione "mirror", spesso conviene eliminare i Data vecchi di quel contatto e reinserirli,
-        // ma per semplicità qui aggiorniamo la prima email trovata.
-        vcard.emails.firstOrNull()?.let { email ->
-            ops.add(ContentProviderOperation.newUpdate(ContactsContract.Data.CONTENT_URI)
-                .withSelection("${ContactsContract.Data.CONTACT_ID} = ? AND ${ContactsContract.Data.MIMETYPE} = ?",
-                    arrayOf(contactId, ContactsContract.CommonDataKinds.Email.CONTENT_ITEM_TYPE))
-                .withValue(ContactsContract.CommonDataKinds.Email.ADDRESS, email.value)
-                .build()) ;
-        }
+        WorkManager.getInstance(this).enqueueUniquePeriodicWork(
+            "ContattiSync",
+            ExistingPeriodicWorkPolicy.UPDATE,
+            workRequest
+        )
+    }
 
-        if (ops.isNotEmpty()) applicationContext.contentResolver.applyBatch(ContactsContract.AUTHORITY, ops) ;
+    private fun forceSyncNow() {
+        val forceRequest = OneTimeWorkRequestBuilder<ImportContactsWorker>()
+            .setConstraints(
+                Constraints.Builder()
+                    .setRequiredNetworkType(NetworkType.CONNECTED)
+                    .build()
+            )
+            .build()
+
+        WorkManager.getInstance(this).enqueue(forceRequest)
+    }
+
+    private fun showActiveStatus() {
+        statusText.text =
+            "Sincronizzazione automatica attiva (ogni 12 ore).\nPuoi chiudere l'app."
+        btnForceSync.visibility = View.VISIBLE
     }
 }
