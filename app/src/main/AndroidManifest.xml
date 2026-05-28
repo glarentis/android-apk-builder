@@ -7,8 +7,11 @@
     <uses-permission android:name="android.permission.READ_CONTACTS" />
     <uses-permission android:name="android.permission.WRITE_CONTACTS" />
 
-    <!-- ✅ Fondamentale per riavvio -->
+    <!-- ✅ Riavvio dispositivo -->
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+
+    <!-- ✅ Foreground (future-proof) -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
 
     <application
         android:allowBackup="true"
@@ -32,17 +35,18 @@
             </intent-filter>
         </activity>
 
-        <!-- ✅ BOOT RECEIVER (CRITICO) -->
+        <!-- ✅ BOOT RECEIVER (RIAVVIO SINCRONIZZAZIONE) -->
         <receiver
             android:name=".BootReceiver"
             android:enabled="true"
-            android:exported="true">
+            android:exported="true"
+            android:directBootAware="true">
             <intent-filter>
                 <action android:name="android.intent.action.BOOT_COMPLETED" />
             </intent-filter>
         </receiver>
 
-        <!-- ✅ FILE PROVIDER (LASCIATO CORRETTO) -->
+        <!-- ✅ FILE PROVIDER -->
         <provider
             android:name="androidx.core.content.FileProvider"
             android:authorities="${applicationId}.provider"
