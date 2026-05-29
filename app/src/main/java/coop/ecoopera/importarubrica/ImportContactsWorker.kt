@@ -10,6 +10,7 @@ import androidx.core.content.ContextCompat
 import androidx.work.CoroutineWorker
 import androidx.work.WorkerParameters
 import ezvcard.Ezvcard
+import ezvcard.VCard
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
@@ -43,7 +44,6 @@ class ImportContactsWorker(
             deleteContacts(toDelete.mapNotNull { localMap[it] })
 
             vcards.forEach { v ->
-
                 val spId = v.getExtendedProperty("X-SHAREPOINT-ID")?.value ?: return@forEach
 
                 val contactId = localMap[spId]
@@ -67,12 +67,14 @@ class ImportContactsWorker(
     // -----------------------------------
     // 🌐 DOWNLOAD
     // -----------------------------------
-    private fun download() =
-        OkHttpClient().newCall(Request.Builder().url(url).build())
-            .execute().body?.string()?.let { Ezvcard.parse(it).all() } ?: emptyList()
+    private fun download(): List<VCard> {
+        val response = OkHttpClient().newCall(Request.Builder().url(url).build()).execute()
+        val body = response.body?.string() ?: return emptyList()
+        return Ezvcard.parse(body).all()
+    }
 
     // -----------------------------------
-    // 📇 LETTURA CONTATTI LOCALI
+    // 📇 LETTURA CONTATTI LOCALI (X-ID)
     // -----------------------------------
     private fun getLocalContacts(): Map<String, String> {
         val map = mutableMapOf<String, String>()
@@ -96,7 +98,7 @@ class ImportContactsWorker(
     }
 
     // -----------------------------------
-    // ❌ DELETE SOLO I TUOI
+    // ❌ DELETE
     // -----------------------------------
     private fun deleteContacts(ids: List<String>) {
         ids.forEach {
@@ -111,32 +113,56 @@ class ImportContactsWorker(
     // -----------------------------------
     // ➕ CREATE
     // -----------------------------------
-    private fun createContact(v: ezvcard.VCard, spId: String) {
-
+    private fun createContact(v: VCard, spId: String) {
         val ops = ArrayList<ContentProviderOperation>()
 
-        ops.add(
-            ContentProviderOperation.newInsert(ContactsContract.RawContacts.CONTENT_URI)
-                .build()
-        )
+        ops.add(ContentProviderOperation.newInsert(ContactsContract.RawContacts.CONTENT_URI).build())
 
-        val name = v.formattedName?.value ?: ""
+        val name = v.formattedName?.value
+        val email = v.emails.firstOrNull()?.value
+        val title = v.titles.firstOrNull()?.value
+        val org = v.organizations.firstOrNull()?.values?.joinToString(" - ")
 
-        ops.add(newData(0,
+        newData(0,
             ContactsContract.CommonDataKinds.StructuredName.CONTENT_ITEM_TYPE,
             ContactsContract.CommonDataKinds.StructuredName.DISPLAY_NAME,
             name
-        ))
+        )?.let { ops.add(it) }
 
-        v.emails.firstOrNull()?.let {
-            ops.add(newData(0,
-                ContactsContract.CommonDataKinds.Email.CONTENT_ITEM_TYPE,
-                ContactsContract.CommonDataKinds.Email.ADDRESS,
-                it.value
-            ))
+        newData(0,
+            ContactsContract.CommonDataKinds.Email.CONTENT_ITEM_TYPE,
+            ContactsContract.CommonDataKinds.Email.ADDRESS,
+            email
+        )?.let { ops.add(it) }
+
+        newData(0,
+            ContactsContract.CommonDataKinds.Organization.CONTENT_ITEM_TYPE,
+            ContactsContract.CommonDataKinds.Organization.COMPANY,
+            org
+        )?.let { ops.add(it) }
+
+        newData(0,
+            ContactsContract.CommonDataKinds.Organization.CONTENT_ITEM_TYPE,
+            ContactsContract.CommonDataKinds.Organization.TITLE,
+            title
+        )?.let { ops.add(it) }
+
+        // ✅ Telefoni
+        v.telephoneNumbers.forEach {
+            val num = it.text
+            if (!num.isNullOrBlank() && num != "-") {
+                ops.add(
+                    ContentProviderOperation.newInsert(ContactsContract.Data.CONTENT_URI)
+                        .withValueBackReference(ContactsContract.Data.RAW_CONTACT_ID, 0)
+                        .withValue(ContactsContract.Data.MIMETYPE,
+                            ContactsContract.CommonDataKinds.Phone.CONTENT_ITEM_TYPE)
+                        .withValue(ContactsContract.CommonDataKinds.Phone.NUMBER, num)
+                        .build()
+                )
+            }
         }
 
-        // ✅ salva SharePoint ID
+        // ✅ X-ID
         ops.add(
             ContentProviderOperation.newInsert(ContactsContract.Data.CONTENT_URI)
                 .withValueBackReference(ContactsContract.Data.RAW_CONTACT_ID, 0)
@@ -151,46 +177,102 @@ class ImportContactsWorker(
     // -----------------------------------
     // 🔄 UPDATE
     // -----------------------------------
-    private fun updateContact(contactId: String, v: ezvcard.VCard) {
+    private fun updateContact(contactId: String, v: VCard) {
 
         val ops = mutableListOf<ContentProviderOperation>()
 
-        // elimina telefoni/email vecchi
+        // elimina dati dinamici
         ops.add(
             ContentProviderOperation.newDelete(ContactsContract.Data.CONTENT_URI)
                 .withSelection(
-                    "${ContactsContract.Data.CONTACT_ID}=? AND ${ContactsContract.Data.MIMETYPE} IN (?,?)",
+                    "${ContactsContract.Data.CONTACT_ID}=? AND ${ContactsContract.Data.MIMETYPE} IN (?,?,?,?)",
                     arrayOf(
                         contactId,
                         ContactsContract.CommonDataKinds.Phone.CONTENT_ITEM_TYPE,
-                        ContactsContract.CommonDataKinds.Email.CONTENT_ITEM_TYPE
+                        ContactsContract.CommonDataKinds.Email.CONTENT_ITEM_TYPE,
+                        ContactsContract.CommonDataKinds.Organization.CONTENT_ITEM_TYPE,
+                        ContactsContract.CommonDataKinds.StructuredName.CONTENT_ITEM_TYPE
                     )
                 ).build()
         )
 
+        val name = v.formattedName?.value
         val email = v.emails.firstOrNull()?.value
+        val title = v.titles.firstOrNull()?.value
+        val org = v.organizations.firstOrNull()?.values?.joinToString(" - ")
 
-        email?.let {
+        if (!name.isNullOrBlank()) {
+            ops.add(
+                ContentProviderOperation.newInsert(ContactsContract.Data.CONTENT_URI)
+                    .withValue(ContactsContract.Data.CONTACT_ID, contactId)
+                    .withValue(ContactsContract.Data.MIMETYPE,
+                        ContactsContract.CommonDataKinds.StructuredName.CONTENT_ITEM_TYPE)
+                    .withValue(ContactsContract.CommonDataKinds.StructuredName.DISPLAY_NAME, name)
+                    .build()
+            )
+        }
+
+        if (!email.isNullOrBlank()) {
             ops.add(
                 ContentProviderOperation.newInsert(ContactsContract.Data.CONTENT_URI)
                     .withValue(ContactsContract.Data.CONTACT_ID, contactId)
                     .withValue(ContactsContract.Data.MIMETYPE,
                         ContactsContract.CommonDataKinds.Email.CONTENT_ITEM_TYPE)
-                    .withValue(ContactsContract.CommonDataKinds.Email.ADDRESS, it)
+                    .withValue(ContactsContract.CommonDataKinds.Email.ADDRESS, email)
                     .build()
             )
+        }
+
+        if (!org.isNullOrBlank() || !title.isNullOrBlank()) {
+            val op = ContentProviderOperation.newInsert(ContactsContract.Data.CONTENT_URI)
+                .withValue(ContactsContract.Data.CONTACT_ID, contactId)
+                .withValue(ContactsContract.Data.MIMETYPE,
+                    ContactsContract.CommonDataKinds.Organization.CONTENT_ITEM_TYPE)
+
+            if (!org.isNullOrBlank())
+                op.withValue(ContactsContract.CommonDataKinds.Organization.COMPANY, org)
+
+            if (!title.isNullOrBlank())
+                op.withValue(ContactsContract.CommonDataKinds.Organization.TITLE, title)
+
+            ops.add(op.build())
+        }
+
+        v.telephoneNumbers.forEach {
+            val num = it.text
+            if (!num.isNullOrBlank() && num != "-") {
+                ops.add(
+                    ContentProviderOperation.newInsert(ContactsContract.Data.CONTENT_URI)
+                        .withValue(ContactsContract.Data.CONTACT_ID, contactId)
+                        .withValue(ContactsContract.Data.MIMETYPE,
+                            ContactsContract.CommonDataKinds.Phone.CONTENT_ITEM_TYPE)
+                        .withValue(ContactsContract.CommonDataKinds.Phone.NUMBER, num)
+                        .build()
+                )
+            }
         }
 
         apply(ops)
     }
 
     // -----------------------------------
-    private fun newData(ref: Int, mime: String, key: String, value: String) =
-        ContentProviderOperation.newInsert(ContactsContract.Data.CONTENT_URI)
+    // ✅ SAFE DATA
+    // -----------------------------------
+    private fun newData(
+        ref: Int,
+        mime: String,
+        key: String,
+        value: String?
+    ): ContentProviderOperation? {
+
+        if (value.isNullOrBlank() || value == "-") return null
+
+        return ContentProviderOperation.newInsert(ContactsContract.Data.CONTENT_URI)
             .withValueBackReference(ContactsContract.Data.RAW_CONTACT_ID, ref)
             .withValue(ContactsContract.Data.MIMETYPE, mime)
             .withValue(key, value)
             .build()
+    }
 
     private fun apply(ops: List<ContentProviderOperation>) {
         applicationContext.contentResolver.applyBatch(
@@ -199,11 +281,12 @@ class ImportContactsWorker(
         )
     }
 
-    private fun hasPermissions() =
-        ContextCompat.checkSelfPermission(
+    private fun hasPermissions(): Boolean {
+        return ContextCompat.checkSelfPermission(
             applicationContext,
             Manifest.permission.WRITE_CONTACTS
         ) == PackageManager.PERMISSION_GRANTED
+    }
 
     private fun log(msg: String) {
         Log.d(TAG, msg)
