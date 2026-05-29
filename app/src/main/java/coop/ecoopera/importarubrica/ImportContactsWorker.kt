@@ -2,6 +2,7 @@ package coop.ecoopera.importarubrica
 
 import android.Manifest
 import android.content.ContentProviderOperation
+import android.content.ContentValues
 import android.content.Context
 import android.content.pm.PackageManager
 import android.provider.ContactsContract
@@ -135,7 +136,6 @@ class ImportContactsWorker(
 
     // -----------------------------------
     private fun buildCreateOperations(v: VCard, spId: String, ops: ArrayList<ContentProviderOperation>) {
-        // Indice di riferimento all'interno del batch corrente
         val backRefIndex = ops.size
 
         ops.add(ContentProviderOperation.newInsert(ContactsContract.RawContacts.CONTENT_URI).build())
@@ -158,7 +158,7 @@ class ImportContactsWorker(
         )?.let { ops.add(it) }
 
         if (org != null || title != null) {
-            val values = android.content.ContentValues().apply {
+            val values = ContentValues().apply {
                 put(ContactsContract.Data.MIMETYPE, ContactsContract.CommonDataKinds.Organization.CONTENT_ITEM_TYPE)
                 org?.let { put(ContactsContract.CommonDataKinds.Organization.COMPANY, it) }
                 title?.let { put(ContactsContract.CommonDataKinds.Organization.TITLE, it) }
@@ -180,23 +180,31 @@ class ImportContactsWorker(
                     else -> ContactsContract.CommonDataKinds.Phone.TYPE_OTHER
                 }
 
+                val values = ContentValues().apply {
+                    put(ContactsContract.Data.MIMETYPE, ContactsContract.CommonDataKinds.Phone.CONTENT_ITEM_TYPE)
+                    put(ContactsContract.CommonDataKinds.Phone.NUMBER, num)
+                    put(ContactsContract.CommonDataKinds.Phone.TYPE, androidPhoneType)
+                }
+
                 ops.add(
                     ContentProviderOperation.newInsert(ContactsContract.Data.CONTENT_URI)
+                        .withValues(values)
                         .withValueBackReference(ContactsContract.Data.RAW_CONTACT_ID, backRefIndex)
-                        .withValue(ContactsContract.Data.MIMETYPE, ContactsContract.CommonDataKinds.Phone.CONTENT_ITEM_TYPE)
-                        .withValue(ContactsContract.CommonDataKinds.Phone.NUMBER, num)
-                        .withValue(ContactsContract.CommonDataKinds.Phone.TYPE, androidPhoneType)
                         .build()
                 )
             }
         }
 
         // X-ID
+        val xIdValues = ContentValues().apply {
+            put(ContactsContract.Data.MIMETYPE, "vnd.android.cursor.item/sharepoint_id")
+            put(ContactsContract.Data.DATA1, spId)
+        }
+
         ops.add(
             ContentProviderOperation.newInsert(ContactsContract.Data.CONTENT_URI)
+                .withValues(xIdValues)
                 .withValueBackReference(ContactsContract.Data.RAW_CONTACT_ID, backRefIndex)
-                .withValue(ContactsContract.Data.MIMETYPE, "vnd.android.cursor.item/sharepoint_id")
-                .withValue(ContactsContract.Data.DATA1, spId)
                 .build()
         )
     }
@@ -230,42 +238,43 @@ class ImportContactsWorker(
         val org = safe(v.organizations.firstOrNull()?.values?.joinToString(" - "))
 
         name?.let {
+            val values = ContentValues().apply {
+                put(ContactsContract.Data.RAW_CONTACT_ID, rawId)
+                put(ContactsContract.Data.MIMETYPE, ContactsContract.CommonDataKinds.StructuredName.CONTENT_ITEM_TYPE)
+                put(ContactsContract.CommonDataKinds.StructuredName.DISPLAY_NAME, it)
+            }
             ops.add(
                 ContentProviderOperation.newInsert(ContactsContract.Data.CONTENT_URI)
-                    .withValue(ContactsContract.Data.RAW_CONTACT_ID, rawId)
-                    .withValue(ContactsContract.Data.MIMETYPE,
-                        ContactsContract.CommonDataKinds.StructuredName.CONTENT_ITEM_TYPE)
-                    .withValue(ContactsContract.CommonDataKinds.StructuredName.DISPLAY_NAME, it)
+                    .withValues(values)
                     .build()
             )
         }
 
         email?.let {
+            val values = ContentValues().apply {
+                put(ContactsContract.Data.RAW_CONTACT_ID, rawId)
+                put(ContactsContract.Data.MIMETYPE, ContactsContract.CommonDataKinds.Email.CONTENT_ITEM_TYPE)
+                put(ContactsContract.CommonDataKinds.Email.ADDRESS, it)
+            }
             ops.add(
                 ContentProviderOperation.newInsert(ContactsContract.Data.CONTENT_URI)
-                    .withValue(ContactsContract.Data.RAW_CONTACT_ID, rawId)
-                    .withValue(ContactsContract.Data.MIMETYPE,
-                        ContactsContract.CommonDataKinds.Email.CONTENT_ITEM_TYPE)
-                    .withValue(ContactsContract.CommonDataKinds.Email.ADDRESS, it)
+                    .withValues(values)
                     .build()
             )
         }
 
         if (org != null || title != null) {
-            val op = ContentProviderOperation.newInsert(ContactsContract.Data.CONTENT_URI)
-                .withValue(ContactsContract.Data.RAW_CONTACT_ID, rawId)
-                .withValue(ContactsContract.Data.MIMETYPE,
-                    ContactsContract.CommonDataKinds.Organization.CONTENT_ITEM_TYPE)
-
-            org?.let {
-                op.withValue(ContactsContract.CommonDataKinds.Organization.COMPANY, it)
+            val values = ContentValues().apply {
+                put(ContactsContract.Data.RAW_CONTACT_ID, rawId)
+                put(ContactsContract.Data.MIMETYPE, ContactsContract.CommonDataKinds.Organization.CONTENT_ITEM_TYPE)
+                org?.let { put(ContactsContract.CommonDataKinds.Organization.COMPANY, it) }
+                title?.let { put(ContactsContract.CommonDataKinds.Organization.TITLE, it) }
             }
-
-            title?.let {
-                op.withValue(ContactsContract.CommonDataKinds.Organization.TITLE, it)
-            }
-
-            ops.add(op.build())
+            ops.add(
+                ContentProviderOperation.newInsert(ContactsContract.Data.CONTENT_URI)
+                    .withValues(values)
+                    .build()
+            )
         }
 
         v.telephoneNumbers.forEach { tel ->
@@ -277,23 +286,30 @@ class ImportContactsWorker(
                     else -> ContactsContract.CommonDataKinds.Phone.TYPE_OTHER
                 }
 
+                val values = ContentValues().apply {
+                    put(ContactsContract.Data.RAW_CONTACT_ID, rawId)
+                    put(ContactsContract.Data.MIMETYPE, ContactsContract.CommonDataKinds.Phone.CONTENT_ITEM_TYPE)
+                    put(ContactsContract.CommonDataKinds.Phone.NUMBER, num)
+                    put(ContactsContract.CommonDataKinds.Phone.TYPE, androidPhoneType)
+                }
+
                 ops.add(
                     ContentProviderOperation.newInsert(ContactsContract.Data.CONTENT_URI)
-                        .withValue(ContactsContract.Data.RAW_CONTACT_ID, rawId)
-                        .withValue(ContactsContract.Data.MIMETYPE, ContactsContract.CommonDataKinds.Phone.CONTENT_ITEM_TYPE)
-                        .withValue(ContactsContract.CommonDataKinds.Phone.NUMBER, num)
-                        .withValue(ContactsContract.CommonDataKinds.Phone.TYPE, androidPhoneType)
+                        .withValues(values)
                         .build()
                 )
             }
         }
 
         // RIAGGIUNGI X-ID
+        val xIdValues = ContentValues().apply {
+            put(ContactsContract.Data.RAW_CONTACT_ID, rawId)
+            put(ContactsContract.Data.MIMETYPE, "vnd.android.cursor.item/sharepoint_id")
+            put(ContactsContract.Data.DATA1, v.getExtendedProperty("X-SHAREPOINT-ID")?.value)
+        }
         ops.add(
             ContentProviderOperation.newInsert(ContactsContract.Data.CONTENT_URI)
-                .withValue(ContactsContract.Data.RAW_CONTACT_ID, rawId)
-                .withValue(ContactsContract.Data.MIMETYPE, "vnd.android.cursor.item/sharepoint_id")
-                .withValue(ContactsContract.Data.DATA1, v.getExtendedProperty("X-SHAREPOINT-ID")?.value)
+                .withValues(xIdValues)
                 .build()
         )
     }
@@ -313,8 +329,7 @@ class ImportContactsWorker(
 
         val safeVal = safe(value) ?: return null
 
-        // Inizializziamo esplicitamente i ContentValues per evitare il bug del framework Android
-        val values = android.content.ContentValues().apply {
+        val values = ContentValues().apply {
             put(ContactsContract.Data.MIMETYPE, mime)
             put(key, safeVal)
         }
