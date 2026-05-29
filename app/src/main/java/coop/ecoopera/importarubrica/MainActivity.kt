@@ -18,6 +18,11 @@ class MainActivity : AppCompatActivity() {
     private lateinit var statusText: TextView
     private lateinit var btnForceSync: Button
 
+    companion object {
+        private const val WORK_NAME = "ContattiSync"
+        private const val WORK_MANUAL = "ContattiSyncManual"
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
@@ -32,6 +37,9 @@ class MainActivity : AppCompatActivity() {
         checkAndSetup()
     }
 
+    // -----------------------------------
+    // ✅ SETUP
+    // -----------------------------------
     private fun checkAndSetup() {
         if (hasPermissions()) {
             setupAutomaticWork()
@@ -41,21 +49,32 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    // -----------------------------------
+    // ✅ PERMESSI
+    // -----------------------------------
     private fun hasPermissions(): Boolean {
         return ContextCompat.checkSelfPermission(this, Manifest.permission.WRITE_CONTACTS) == PackageManager.PERMISSION_GRANTED &&
-               ContextCompat.checkSelfPermission(this, Manifest.permission.READ_CONTACTS) == PackageManager.PERMISSION_GRANTED
+                ContextCompat.checkSelfPermission(this, Manifest.permission.READ_CONTACTS) == PackageManager.PERMISSION_GRANTED
     }
 
     private fun requestPermissions() {
         ActivityCompat.requestPermissions(
             this,
-            arrayOf(Manifest.permission.READ_CONTACTS, Manifest.permission.WRITE_CONTACTS),
+            arrayOf(
+                Manifest.permission.READ_CONTACTS,
+                Manifest.permission.WRITE_CONTACTS
+            ),
             100
         )
     }
 
-    override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
+    override fun onRequestPermissionsResult(
+        requestCode: Int,
+        permissions: Array<out String>,
+        grantResults: IntArray
+    ) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+
         if (requestCode == 100 && grantResults.all { it == PackageManager.PERMISSION_GRANTED }) {
             setupAutomaticWork()
             showActiveStatus()
@@ -64,34 +83,56 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    // -----------------------------------
+    // ⏱ SYNC AUTOMATICA
+    // -----------------------------------
     private fun setupAutomaticWork() {
+
         val constraints = Constraints.Builder()
             .setRequiredNetworkType(NetworkType.CONNECTED)
             .build()
 
-        val workRequest = PeriodicWorkRequestBuilder<ImportContactsWorker>(12, TimeUnit.HOURS)
-            .setConstraints(constraints)
-            .build()
+        val workRequest =
+            PeriodicWorkRequestBuilder<ImportContactsWorker>(12, TimeUnit.HOURS)
+                .setConstraints(constraints)
+                .build()
 
         WorkManager.getInstance(this).enqueueUniquePeriodicWork(
-            "ContattiSync",
+            WORK_NAME,
             ExistingPeriodicWorkPolicy.UPDATE,
             workRequest
         )
     }
 
+    // -----------------------------------
+    // 🚀 SYNC MANUALE (FIX DUPLICATI)
+    // -----------------------------------
     private fun forceSyncNow() {
-        val forceRequest = OneTimeWorkRequestBuilder<ImportContactsWorker>()
-            .setConstraints(Constraints.Builder().setRequiredNetworkType(NetworkType.CONNECTED).build())
-            .build()
 
-        WorkManager.getInstance(this).enqueue(forceRequest)
+        val forceRequest =
+            OneTimeWorkRequestBuilder<ImportContactsWorker>()
+                .setConstraints(
+                    Constraints.Builder()
+                        .setRequiredNetworkType(NetworkType.CONNECTED)
+                        .build()
+                )
+                .build()
+
+        WorkManager.getInstance(this).enqueueUniqueWork(
+            WORK_MANUAL,
+            ExistingWorkPolicy.REPLACE, // ✅ evita più esecuzioni contemporanee
+            forceRequest
+        )
 
         Toast.makeText(this, "Sincronizzazione forzata avviata...", Toast.LENGTH_SHORT).show()
     }
 
+    // -----------------------------------
+    // ✅ UI
+    // -----------------------------------
     private fun showActiveStatus() {
-        statusText.text = "Sincronizzazione automatica attiva (ogni 12 ore).\nPuoi chiudere l'app."
+        statusText.text =
+            "Sincronizzazione automatica attiva (ogni 12 ore).\nPuoi chiudere l'app."
         btnForceSync.visibility = View.VISIBLE
     }
 }
