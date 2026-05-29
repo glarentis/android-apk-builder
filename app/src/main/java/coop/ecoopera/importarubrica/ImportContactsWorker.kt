@@ -158,18 +158,15 @@ class ImportContactsWorker(
         )?.let { ops.add(it) }
 
         if (org != null || title != null) {
+            val values = android.content.ContentValues().apply {
+                put(ContactsContract.Data.MIMETYPE, ContactsContract.CommonDataKinds.Organization.CONTENT_ITEM_TYPE)
+                org?.let { put(ContactsContract.CommonDataKinds.Organization.COMPANY, it) }
+                title?.let { put(ContactsContract.CommonDataKinds.Organization.TITLE, it) }
+            }
+
             val op = ContentProviderOperation.newInsert(ContactsContract.Data.CONTENT_URI)
+                .withValues(values)
                 .withValueBackReference(ContactsContract.Data.RAW_CONTACT_ID, backRefIndex)
-                .withValue(ContactsContract.Data.MIMETYPE,
-                    ContactsContract.CommonDataKinds.Organization.CONTENT_ITEM_TYPE)
-
-            org?.let {
-                op.withValue(ContactsContract.CommonDataKinds.Organization.COMPANY, it)
-            }
-
-            title?.let {
-                op.withValue(ContactsContract.CommonDataKinds.Organization.TITLE, it)
-            }
 
             ops.add(op.build())
         }
@@ -316,10 +313,15 @@ class ImportContactsWorker(
 
         val safeVal = safe(value) ?: return null
 
+        // Inizializziamo esplicitamente i ContentValues per evitare il bug del framework Android
+        val values = android.content.ContentValues().apply {
+            put(ContactsContract.Data.MIMETYPE, mime)
+            put(key, safeVal)
+        }
+
         return ContentProviderOperation.newInsert(ContactsContract.Data.CONTENT_URI)
+            .withValues(values)
             .withValueBackReference(ContactsContract.Data.RAW_CONTACT_ID, ref)
-            .withValue(ContactsContract.Data.MIMETYPE, mime)
-            .withValue(key, safeVal)
             .build()
     }
 
