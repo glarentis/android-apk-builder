@@ -93,8 +93,8 @@ class ImportContactsWorker(
         // ✅ Raw contact
         ops.add(
             ContentProviderOperation.newInsert(ContactsContract.RawContacts.CONTENT_URI)
-                .withValueNull(ContactsContract.RawContacts.ACCOUNT_TYPE,null)
-                .withValueNull(ContactsContract.RawContacts.ACCOUNT_NAME,null)
+                .withValue(ContactsContract.RawContacts.ACCOUNT_TYPE,null)
+                .withValue(ContactsContract.RawContacts.ACCOUNT_NAME,null)
                 .build()
         )
 
