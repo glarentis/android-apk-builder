@@ -18,6 +18,8 @@ import okhttp3.OkHttpClient
 import okhttp3.Request
 import java.io.IOException
 
+private const val MIMETYPE_SHAREPOINT = "vnd.android.cursor.item/sharepoint_id"
+
 class ImportContactsWorker(
     context: Context,
     params: WorkerParameters
@@ -34,16 +36,20 @@ class ImportContactsWorker(
 
         try {
             val vcards = download()
+                if (vcards.isEmpty()) {
+                    log("Nessun contatto scaricato o errore di rete. Esco senza modificare la rubrica.")
+                    return@withContext Result.success()
+                }
 
-            val remoteIds = vcards.mapNotNull {
-                it.getExtendedProperty("X-SHAREPOINT-ID")?.value
-            }.toSet()
+                val remoteIds = vcards.mapNotNull {
+                    it.getExtendedProperty("X-SHAREPOINT-ID")?.value
+                }.toSet()
 
-            val localMap = getLocalContacts()
+                val localMap = getLocalContacts()
 
-            // DELETE solo i contatti non più presenti da remoto
-            val toDelete = localMap.keys - remoteIds
-            deleteContacts(toDelete.mapNotNull { localMap[it] })
+                // DELETE solo i contatti non più presenti da remoto
+                val toDelete = localMap.keys - remoteIds
+                deleteContacts(toDelete.mapNotNull { localMap[it] })
 
             val ops = ArrayList<ContentProviderOperation>()
 
@@ -52,7 +58,7 @@ class ImportContactsWorker(
                 val contactId = localMap[spId]
 
                 if (contactId != null) {
-                    buildUpdateOperations(contactId, v, ops)
+                    buildUpdateOperations(contactId, v,spId, ops)
                 } else {
                     buildCreateOperations(v, spId, ops)
                 }
@@ -81,10 +87,22 @@ class ImportContactsWorker(
     // -----------------------------------
     private fun download(): List<VCard> {
         val request = Request.Builder().url(url).build()
-        OkHttpClient().newCall(request).execute().use { response ->
-            if (!response.isSuccessful) throw IOException("Errore HTTP server: ${response.code}")
-            val body = response.body?.string() ?: return emptyList()
-            return Ezvcard.parse(body).all()
+        return try {
+            OkHttpClient().newCall(request).execute().use { response ->
+                if (!response.isSuccessful) throw IOException("Errore HTTP server: ${response.code}")
+
+                val responseBody = response.body
+                val bodyString = responseBody?.string()
+
+                if (bodyString.isNullOrBlank()) {
+                    emptyList()
+                } else {
+                    Ezvcard.parse(bodyString).all() ?: emptyList()
+                }
+            }
+        } catch (e: Exception) {
+            log("Errore durante il download o parsing: ${e.message}")
+            emptyList()
         }
     }
 
@@ -99,11 +117,15 @@ class ImportContactsWorker(
                 ContactsContract.Data.DATA1
             ),
             "${ContactsContract.Data.MIMETYPE}=?",
-            arrayOf("vnd.android.cursor.item/sharepoint_id"),
+            arrayOf(MIMETYPE_SHAREPOINT),
             null
-        )?.use {
+        )?.use { it ->
             while (it.moveToNext()) {
-                map[it.getString(1)] = it.getString(0)
+                val contactId = it.getString(0)
+                val spId = it.getString(1)
+                if (!contactId.isNullOrBlank() && !spId.isNullOrBlank()) {
+                    map[spId] = contactId
+                }
             }
         }
         return map
@@ -138,12 +160,18 @@ class ImportContactsWorker(
     private fun buildCreateOperations(v: VCard, spId: String, ops: ArrayList<ContentProviderOperation>) {
         val backRefIndex = ops.size
 
-        ops.add(ContentProviderOperation.newInsert(ContactsContract.RawContacts.CONTENT_URI).build())
+        // CORREZIONE: Inserito un ContentValues vuoto per evitare il crash interno di Android
+        val emptyValues = ContentValues()
+        ops.add(
+            ContentProviderOperation.newInsert(ContactsContract.RawContacts.CONTENT_URI)
+                .withValues(emptyValues)
+                .build()
+        )
 
         val name = safe(v.formattedName?.value)
-        val email = safe(v.emails.firstOrNull()?.value)
-        val title = safe(v.titles.firstOrNull()?.value)
-        val org = safe(v.organizations.firstOrNull()?.values?.joinToString(" - "))
+        val email = safe(v.emails?.firstOrNull()?.value)
+        val title = safe(v.titles?.firstOrNull()?.value)
+        val org = safe(v.organizations?.firstOrNull()?.values?.joinToString(" - "))
 
         newData(backRefIndex,
             ContactsContract.CommonDataKinds.StructuredName.CONTENT_ITEM_TYPE,
@@ -171,12 +199,12 @@ class ImportContactsWorker(
             ops.add(op.build())
         }
 
-        v.telephoneNumbers.forEach { tel ->
+        v.telephoneNumbers?.forEach { tel ->
             val num = safe(tel.text)
             if (num != null) {
                 val androidPhoneType = when {
-                    tel.types.contains(ezvcard.parameter.TelephoneType.CELL) -> ContactsContract.CommonDataKinds.Phone.TYPE_MOBILE
-                    tel.types.contains(ezvcard.parameter.TelephoneType.WORK) -> ContactsContract.CommonDataKinds.Phone.TYPE_WORK
+                    tel.types?.contains(ezvcard.parameter.TelephoneType.CELL) == true -> ContactsContract.CommonDataKinds.Phone.TYPE_MOBILE
+                    tel.types?.contains(ezvcard.parameter.TelephoneType.WORK) == true -> ContactsContract.CommonDataKinds.Phone.TYPE_WORK
                     else -> ContactsContract.CommonDataKinds.Phone.TYPE_OTHER
                 }
 
@@ -197,7 +225,7 @@ class ImportContactsWorker(
 
         // X-ID
         val xIdValues = ContentValues().apply {
-            put(ContactsContract.Data.MIMETYPE, "vnd.android.cursor.item/sharepoint_id")
+            put(ContactsContract.Data.MIMETYPE, MIMETYPE_SHAREPOINT)
             put(ContactsContract.Data.DATA1, spId)
         }
 
@@ -210,16 +238,15 @@ class ImportContactsWorker(
     }
 
     // -----------------------------------
-    private fun buildUpdateOperations(contactId: String, v: VCard, ops: ArrayList<ContentProviderOperation>) {
+    private fun buildUpdateOperations(contactId: String, v: VCard, spId: String, ops: ArrayList<ContentProviderOperation>) {
         val rawId = getRawContactId(contactId) ?: return
 
-        // Cancella selettivamente SOLO i dati gestiti dall'app per preservare modifiche locali dell'utente
         val mimetypesToClean = arrayOf(
             ContactsContract.CommonDataKinds.StructuredName.CONTENT_ITEM_TYPE,
             ContactsContract.CommonDataKinds.Email.CONTENT_ITEM_TYPE,
             ContactsContract.CommonDataKinds.Organization.CONTENT_ITEM_TYPE,
             ContactsContract.CommonDataKinds.Phone.CONTENT_ITEM_TYPE,
-            "vnd.android.cursor.item/sharepoint_id"
+            MIMETYPE_SHAREPOINT
         )
 
         mimetypesToClean.forEach { mime ->
@@ -228,14 +255,15 @@ class ImportContactsWorker(
                     .withSelection(
                         "${ContactsContract.Data.RAW_CONTACT_ID}=? AND ${ContactsContract.Data.MIMETYPE}=?",
                         arrayOf(rawId, mime)
-                    ).build()
+                    )
+                    .build()
             )
         }
 
         val name = safe(v.formattedName?.value)
-        val email = safe(v.emails.firstOrNull()?.value)
-        val title = safe(v.titles.firstOrNull()?.value)
-        val org = safe(v.organizations.firstOrNull()?.values?.joinToString(" - "))
+        val email = safe(v.emails?.firstOrNull()?.value)
+        val title = safe(v.titles?.firstOrNull()?.value)
+        val org = safe(v.organizations?.firstOrNull()?.values?.joinToString(" - "))
 
         name?.let {
             val values = ContentValues().apply {
@@ -277,12 +305,12 @@ class ImportContactsWorker(
             )
         }
 
-        v.telephoneNumbers.forEach { tel ->
+        v.telephoneNumbers?.forEach { tel ->
             val num = safe(tel.text)
             if (num != null) {
                 val androidPhoneType = when {
-                    tel.types.contains(ezvcard.parameter.TelephoneType.CELL) -> ContactsContract.CommonDataKinds.Phone.TYPE_MOBILE
-                    tel.types.contains(ezvcard.parameter.TelephoneType.WORK) -> ContactsContract.CommonDataKinds.Phone.TYPE_WORK
+                    tel.types?.contains(ezvcard.parameter.TelephoneType.CELL) == true -> ContactsContract.CommonDataKinds.Phone.TYPE_MOBILE
+                    tel.types?.contains(ezvcard.parameter.TelephoneType.WORK) == true -> ContactsContract.CommonDataKinds.Phone.TYPE_WORK
                     else -> ContactsContract.CommonDataKinds.Phone.TYPE_OTHER
                 }
 
@@ -304,8 +332,8 @@ class ImportContactsWorker(
         // RIAGGIUNGI X-ID
         val xIdValues = ContentValues().apply {
             put(ContactsContract.Data.RAW_CONTACT_ID, rawId)
-            put(ContactsContract.Data.MIMETYPE, "vnd.android.cursor.item/sharepoint_id")
-            put(ContactsContract.Data.DATA1, v.getExtendedProperty("X-SHAREPOINT-ID")?.value)
+            put(ContactsContract.Data.MIMETYPE, MIMETYPE_SHAREPOINT)
+            put(ContactsContract.Data.DATA1, spId)
         }
         ops.add(
             ContentProviderOperation.newInsert(ContactsContract.Data.CONTENT_URI)
@@ -341,10 +369,16 @@ class ImportContactsWorker(
     }
 
     private fun apply(ops: List<ContentProviderOperation>) {
-        applicationContext.contentResolver.applyBatch(
-            ContactsContract.AUTHORITY,
-            ArrayList(ops)
-        )
+        if (ops.isEmpty()) return
+        try {
+            applicationContext.contentResolver.applyBatch(
+                ContactsContract.AUTHORITY,
+                ArrayList(ops)
+            )
+        } catch (e: Exception) {
+            log("Errore critico durante l'applicazione del batch: ${e.message}")
+            throw e // Rilanciamo l'eccezione per attivare il Result.retry() globale di WorkManager
+        }
     }
 
     private fun hasPermissions(): Boolean {

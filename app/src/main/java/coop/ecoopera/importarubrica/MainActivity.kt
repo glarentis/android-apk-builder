@@ -75,11 +75,12 @@ class MainActivity : AppCompatActivity() {
     ) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
 
-        if (requestCode == 100 && grantResults.all { it == PackageManager.PERMISSION_GRANTED }) {
+        if (requestCode == 100 && grantResults.isNotEmpty() && grantResults.all { it == PackageManager.PERMISSION_GRANTED }) {
             setupAutomaticWork()
             showActiveStatus()
         } else {
             statusText.text = "Permessi necessari per aggiornare la rubrica aziendale."
+            btnForceSync.visibility = View.GONE
         }
     }
 
@@ -87,7 +88,6 @@ class MainActivity : AppCompatActivity() {
     // ⏱ SYNC AUTOMATICA
     // -----------------------------------
     private fun setupAutomaticWork() {
-
         val constraints = Constraints.Builder()
             .setRequiredNetworkType(NetworkType.CONNECTED)
             .build()
@@ -97,18 +97,18 @@ class MainActivity : AppCompatActivity() {
                 .setConstraints(constraints)
                 .build()
 
+        // CORREZIONE CRITICA: Cambiato da UPDATE a KEEP per evitare il reset del timer ad ogni apertura dell'app
         WorkManager.getInstance(this).enqueueUniquePeriodicWork(
             WORK_NAME,
-            ExistingPeriodicWorkPolicy.UPDATE,
+            ExistingPeriodicWorkPolicy.KEEP,
             workRequest
         )
     }
 
     // -----------------------------------
-    // 🚀 SYNC MANUALE (FIX DUPLICATI)
+    // 🚀 SYNC MANUALE (CORRETTO CONTRO CONFLITTI)
     // -----------------------------------
     private fun forceSyncNow() {
-
         val forceRequest =
             OneTimeWorkRequestBuilder<ImportContactsWorker>()
                 .setConstraints(
@@ -118,9 +118,11 @@ class MainActivity : AppCompatActivity() {
                 )
                 .build()
 
+        // Usiamo KEEP per evitare che, se l'utente clicca più volte di fila,
+        // l'operazione in corso venga bruscamente interrotta e ricreata da zero.
         WorkManager.getInstance(this).enqueueUniqueWork(
             WORK_MANUAL,
-            ExistingWorkPolicy.REPLACE, // ✅ evita più esecuzioni contemporanee
+            ExistingWorkPolicy.KEEP,
             forceRequest
         )
 
@@ -131,8 +133,7 @@ class MainActivity : AppCompatActivity() {
     // ✅ UI
     // -----------------------------------
     private fun showActiveStatus() {
-        statusText.text =
-            "Sincronizzazione automatica attiva (ogni 12 ore).\nPuoi chiudere l'app."
+        statusText.text = "Sincronizzazione automatica attiva (ogni 12 ore).\nPuoi chiudere l'app."
         btnForceSync.visibility = View.VISIBLE
     }
 }
